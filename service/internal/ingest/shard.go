@@ -12,30 +12,54 @@ import (
 // device are applied sequentially without a global lock.
 type Shards struct {
 	store   *store.Store
-	queues  []chan domain.Event
+	prio    []chan domain.Event
+	bulk    []chan domain.Event
 	nowFunc func() time.Time
 }
 
-// New starts nShards workers, each draining a queue of queueSize.
-func New(st *store.Store, nShards, queueSize int) *Shards {
-	sh := &Shards{store: st, queues: make([]chan domain.Event, nShards), nowFunc: time.Now}
-	for i := range sh.queues {
-		sh.queues[i] = make(chan domain.Event, queueSize)
-		go sh.loop(sh.queues[i])
+// New starts nShards workers, each draining a prio and a bulk queue.
+// The worker always drains prio first, so falls skip bulk backlogs.
+func New(st *store.Store, nShards, prioSize, bulkSize int) *Shards {
+	sh := &Shards{
+		store:   st,
+		prio:    make([]chan domain.Event, nShards),
+		bulk:    make([]chan domain.Event, nShards),
+		nowFunc: time.Now,
+	}
+	for i := range sh.prio {
+		sh.prio[i] = make(chan domain.Event, prioSize)
+		sh.bulk[i] = make(chan domain.Event, bulkSize)
+		go sh.loop(sh.prio[i], sh.bulk[i])
 	}
 	return sh
 }
 
-func (sh *Shards) loop(q chan domain.Event) {
-	for ev := range q {
-		sh.store.Apply(ev, sh.nowFunc())
+func (sh *Shards) loop(prio, bulk chan domain.Event) {
+	for {
+		select {
+		case ev := <-prio:
+			sh.store.Apply(ev, sh.nowFunc())
+			continue
+		default:
+		}
+		select {
+		case ev := <-prio:
+			sh.store.Apply(ev, sh.nowFunc())
+		case ev := <-bulk:
+			sh.store.Apply(ev, sh.nowFunc())
+		}
 	}
 }
 
 // Enqueue blocks when the shard queue is full, pushing back on HTTP
-// instead of dropping events.
+// instead of dropping events. Falls go to prio, everything else to bulk.
 func (sh *Shards) Enqueue(ev domain.Event) {
-	sh.queues[shardOf(ev.DeviceID, len(sh.queues))] <- ev
+	i := shardOf(ev.DeviceID, len(sh.prio))
+	if domain.IsPriority(ev.Type) {
+		sh.prio[i] <- ev
+		return
+	}
+	sh.bulk[i] <- ev
 }
 
 func shardOf(deviceID string, n int) int {

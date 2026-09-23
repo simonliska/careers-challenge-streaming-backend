@@ -28,6 +28,11 @@ func ValidType(t string) bool {
 	return false
 }
 
+// IsPriority reports whether t goes to the prio channel (fall_warn only).
+func IsPriority(t string) bool {
+	return t == "fall_warn"
+}
+
 // Alarm is one deduplicated fall warning with its original timestamp.
 type Alarm struct {
 	EventID    string    `json:"event_id"`

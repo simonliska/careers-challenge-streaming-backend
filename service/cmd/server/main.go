@@ -43,7 +43,7 @@ func main() {
 	w.SetCount(total)
 	log.Printf("restored snapshot_off=%d wal_total=%d alarms=%d", snapOff, total, len(st.AlarmsSince(time.Time{})))
 
-	shards := ingest.New(st, 64, 2048)
+	shards := ingest.New(st, 64, 1024, 4096)
 	srv := &http.Server{
 		Addr:         addr,
 		Handler:      httpapi.New(st, shards, w).Routes(),
