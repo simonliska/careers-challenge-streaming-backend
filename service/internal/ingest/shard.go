@@ -5,13 +5,16 @@ import (
 	"time"
 
 	"teton-service/internal/domain"
-	"teton-service/internal/store"
 )
+
+type Applier interface {
+	Apply(ev domain.Event, now time.Time) (bool, string)
+}
 
 // Shards routes each device_id to a fixed worker, so events from one
 // device are applied sequentially without a global lock.
 type Shards struct {
-	store   *store.Store
+	store   Applier
 	prio    []chan domain.Event
 	bulk    []chan domain.Event
 	nowFunc func() time.Time
@@ -19,7 +22,7 @@ type Shards struct {
 
 // New starts nShards workers, each draining a prio and a bulk queue.
 // The worker always drains prio first, so falls skip bulk backlogs.
-func New(st *store.Store, nShards, prioSize, bulkSize int) *Shards {
+func New(st Applier, nShards, prioSize, bulkSize int) *Shards {
 	sh := &Shards{
 		store:   st,
 		prio:    make([]chan domain.Event, nShards),
