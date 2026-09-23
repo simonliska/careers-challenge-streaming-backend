@@ -51,6 +51,12 @@ def main():
     p.add_argument("--target", default="http://localhost:8080")
     p.add_argument("--devices", type=int, default=50)
     p.add_argument("--duration", type=float)
+    p.add_argument("--workers", type=int, default=1,
+                   help="Sender threads with keep-alive HTTP (default: 1)")
+    p.add_argument("--device-offset", type=int, default=0,
+                   help="Starting device index (default: 0)")
+    p.add_argument("--rps-per-device", type=float, default=1.0,
+                   help="Base events/sec per device (default: 1.0)")
     args = p.parse_args()
 
     # Default durations chosen to keep local runs short.
@@ -69,6 +75,9 @@ def main():
         "--mode", mode,
         "--target", args.target,
         "--devices", str(args.devices),
+        "--device-offset", str(args.device_offset),
+        "--workers", str(args.workers),
+        "--rps-per-device", str(args.rps_per_device),
         "--duration", str(duration),
     ]
     print(f"Running scenario '{args.scenario}' ({mode}) against {args.target}")
