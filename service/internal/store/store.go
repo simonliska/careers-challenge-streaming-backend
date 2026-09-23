@@ -14,9 +14,6 @@ const (
 	healthExpect = 300.0
 
 	// Same fall = same device + same ts.
-	futureLimit = time.Hour
-	pastLimit   = time.Hour
-
 	maxPresencePerRoom = 5000
 )
 
@@ -51,15 +48,8 @@ func New() *Store {
 	}
 }
 
-// Apply adds one event. False means rejected.
+// Apply adds one event; callers pre-validate timestamps. False means rejected.
 func (s *Store) Apply(ev domain.Event, now time.Time) (bool, string) {
-	if ev.Ts.After(now.Add(futureLimit)) {
-		return false, "ts more than 1h in future"
-	}
-	if ev.Ts.Before(now.Add(-pastLimit)) {
-		return false, "ts more than 1h in past"
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

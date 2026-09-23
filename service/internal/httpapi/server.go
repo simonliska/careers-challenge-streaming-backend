@@ -10,6 +10,7 @@ import (
 	"teton-service/internal/domain"
 	"teton-service/internal/ingest"
 	"teton-service/internal/store"
+	"teton-service/internal/wal"
 )
 
 const maxBody = 64 * 1024
@@ -17,12 +18,13 @@ const maxBody = 64 * 1024
 type Server struct {
 	st     *store.Store
 	shards *ingest.Shards
+	wal    *wal.Writer
 	now    func() time.Time
 }
 
 // New wires the store and shard workers into the HTTP handlers.
-func New(st *store.Store, sh *ingest.Shards) *Server {
-	return &Server{st: st, shards: sh, now: time.Now}
+func New(st *store.Store, sh *ingest.Shards, w *wal.Writer) *Server {
+	return &Server{st: st, shards: sh, wal: w, now: time.Now}
 }
 
 // Routes exposes the ingest and query endpoints.
@@ -77,10 +79,18 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "presence missing in_room"})
 		return
 	}
-	s.shards.Enqueue(domain.Event{
+	ev := domain.Event{
 		DeviceID: raw.DeviceID, RoomID: raw.RoomID, Type: raw.Type,
 		TsRaw: raw.Ts, Seq: raw.Seq, InRoom: raw.InRoom, Conf: raw.Conf, Ts: ts,
-	})
+	}
+	// Append-before-ack: WAL first, then in-memory. Falls fsync inline.
+	if s.wal != nil {
+		if _, err := s.wal.Append(ev); err != nil {
+			writeJSON(w, 500, map[string]string{"error": "wal append failed"})
+			return
+		}
+	}
+	s.shards.Enqueue(ev)
 	writeJSON(w, 202, map[string]bool{"ok": true})
 }
 
