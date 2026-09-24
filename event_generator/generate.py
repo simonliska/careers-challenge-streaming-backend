@@ -121,8 +121,16 @@ _POOL_QUEUE_SIZE = 4096
 
 def _pool_worker(host: str, port: int, use_https: bool, path: str,
                  q: "queue.Queue", stats: dict) -> None:
-    """Drain one worker queue over a persistent HTTP connection (keep-alive)."""
+    """Drain one worker queue over a persistent HTTP connection (keep-alive).
+
+    Send-once like the legacy Sender: any transport error counts the item
+    as failed, drops the connection, and moves on. Per-status and
+    per-exception counters plus failure timestamps are recorded for
+    diagnosis only and change nothing on the wire.
+    """
     import http.client
+    import time as _time
+    t0 = stats.get("_t0", _time.time())
     conn = None
     while True:
         item = q.get()
@@ -141,10 +149,14 @@ def _pool_worker(host: str, port: int, use_https: bool, path: str,
             resp.read()
             if resp.status >= 400:
                 stats["failed"] += 1
+                stats[f"http_{resp.status}"] = stats.get(f"http_{resp.status}", 0) + 1
             else:
                 stats["sent"] += 1
-        except Exception:
+        except Exception as e:
             stats["failed"] += 1
+            key = f"exc_{type(e).__name__}"
+            stats[key] = stats.get(key, 0) + 1
+            stats.setdefault("fail_at", []).append(round(_time.time() - t0))
             try:
                 if conn is not None:
                     conn.close()
@@ -299,6 +311,20 @@ def run(devices: list, target: str, duration: float, rps_per_device: float,
     print(f"  distinct falls:       {gt['distinct_falls']} (dedup target)")
     print(f"  HTTP sent ok:         {sender.sent}")
     print(f"  HTTP failed:          {sender.failed}")
+    if isinstance(sender, PoolSender):
+        detail = {}
+        fail_at = []
+        for s in sender.stats:
+            for k, v in s.items():
+                if k == "fail_at":
+                    fail_at.extend(v)
+                elif k not in ("sent", "failed") and not k.startswith("_") and v:
+                    detail[k] = detail.get(k, 0) + v
+        if detail:
+            print(f"  failure detail:       {detail}")
+        if fail_at:
+            from collections import Counter
+            print(f"  failure timing (s):   {dict(sorted(Counter(fail_at).items()))}")
     return {"total": gt["total"], "distinct_falls": gt["distinct_falls"],
             "sent_ok": sender.sent, "failed": sender.failed}
 
