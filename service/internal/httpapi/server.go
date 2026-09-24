@@ -35,6 +35,7 @@ func (s *Server) Routes() http.Handler {
 	m.HandleFunc("GET /rooms/{room_id}/occupancy", s.getOccupancy)
 	m.HandleFunc("GET /alarms", s.getAlarms)
 	m.HandleFunc("GET /alarms/feed", s.getFeed)
+	m.HandleFunc("GET /metrics", s.getMetrics)
 	m.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, 200, map[string]bool{"ok": true})
 	})
@@ -82,6 +83,7 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 	ev := domain.Event{
 		DeviceID: raw.DeviceID, RoomID: raw.RoomID, Type: raw.Type,
 		TsRaw: raw.Ts, Seq: raw.Seq, InRoom: raw.InRoom, Conf: raw.Conf, Ts: ts,
+		IngestTs: now,
 	}
 	// Append-before-ack: WAL first, then in-memory. Falls fsync inline.
 	if s.wal != nil {
@@ -92,6 +94,21 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	s.shards.Enqueue(ev)
 	writeJSON(w, 202, map[string]bool{"ok": true})
+}
+
+func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request) {
+	p50, p95, n := s.st.FallLatencySnapshot()
+	ep50, ep95, en := s.st.EmitLatencySnapshot()
+	var walTotal int64
+	if s.wal != nil {
+		walTotal = s.wal.Count()
+	}
+	writeJSON(w, 200, map[string]any{
+		"fall_latency_ms":      map[string]any{"p50": p50, "p95": p95, "count": n},
+		"fall_emit_latency_ms": map[string]any{"p50": ep50, "p95": ep95, "count": en},
+		"wal_total":            walTotal,
+		"alarms_total":         len(s.st.AlarmsSince(time.Time{})),
+	})
 }
 
 func (s *Server) getHealth(w http.ResponseWriter, r *http.Request) {
@@ -133,8 +150,11 @@ func (s *Server) getAlarms(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"alarms": items})
 }
 
-// getFeed replays AlarmsSince(since), then streams new falls as SSE.
-// Consumers resume from the last seen ts after a gap.
+// getFeed replays alarms at since, then streams new falls as SSE.
+// Replay is inclusive so resume redelivers the boundary alarm (dedup by
+// event_id) instead of dropping same-timestamp siblings. Live items are
+// all post-subscribe by construction; replayed IDs are skipped once to
+// cover the subscribe/replay overlap without a lossy timestamp watermark.
 func (s *Server) getFeed(w http.ResponseWriter, r *http.Request) {
 	since, ok := domain.ParseTime(r.URL.Query().Get("since"))
 	if !ok {
@@ -153,9 +173,11 @@ func (s *Server) getFeed(w http.ResponseWriter, r *http.Request) {
 	ch := s.st.Subscribe(128)
 	defer s.st.Unsubscribe(ch)
 
-	for _, a := range s.st.AlarmsSince(since) {
+	replayed := s.st.AlarmsSinceInclusive(since)
+	sent := make(map[string]struct{}, len(replayed))
+	for _, a := range replayed {
 		fmt.Fprintf(w, "data: %s\n\n", alarmJSON(a))
-		since = a.Ts
+		sent[a.EventID] = struct{}{}
 	}
 	fl.Flush()
 
@@ -166,10 +188,18 @@ func (s *Server) getFeed(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case a := <-ch:
-			if a.Ts.After(since) {
-				fmt.Fprintf(w, "data: %s\n\n", alarmJSON(a))
-				since = a.Ts
-				fl.Flush()
+			if _, dup := sent[a.EventID]; dup {
+				delete(sent, a.EventID)
+				continue
+			}
+			fmt.Fprintf(w, "data: %s\n\n", alarmJSON(a))
+			fl.Flush()
+			if !a.IngestTs.IsZero() {
+				lat := s.now().Sub(a.IngestTs)
+				if lat < 0 {
+					lat = 0
+				}
+				s.st.ObserveEmitLatency(lat)
 			}
 		case <-keep.C:
 			fmt.Fprintf(w, ": keepalive\n\n")

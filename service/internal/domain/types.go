@@ -17,6 +17,8 @@ type Event struct {
 	Conf     *float64 `json:"confidence,omitempty"`
 
 	Ts time.Time `json:"-"` // parsed TsRaw, authoritative time
+
+	IngestTs time.Time `json:"-"` // HTTP receive time, never persisted
 }
 
 // ValidType reports whether t is a known event type.
@@ -41,6 +43,8 @@ type Alarm struct {
 	Ts         time.Time `json:"-"`
 	TsRaw      string    `json:"ts"`
 	Confidence float64   `json:"confidence"`
+
+	IngestTs time.Time `json:"-"` // server receive time, never persisted
 }
 
 // ParseTime accepts RFC3339Nano, plain RFC3339, unix seconds, or "0"/""

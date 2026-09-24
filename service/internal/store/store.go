@@ -35,6 +35,10 @@ type Store struct {
 	alarms   []domain.Alarm
 	seenFall map[string]struct{}
 
+	latMu  sync.Mutex
+	latMs  []float64
+	emitMs []float64
+
 	subsMu sync.Mutex
 	subs   map[chan domain.Alarm]struct{}
 }
@@ -98,12 +102,66 @@ func (s *Store) Apply(ev domain.Event, now time.Time) (bool, string) {
 			Ts:         ev.Ts,
 			TsRaw:      ev.TsRaw,
 			Confidence: conf,
+			IngestTs:   ev.IngestTs,
 		}
 		s.alarms = insertAlarmSorted(s.alarms, a)
 		s.broadcast(a)
+		if !ev.IngestTs.IsZero() {
+			lat := now.Sub(ev.IngestTs)
+			if lat < 0 {
+				lat = 0
+			}
+			s.latMu.Lock()
+			s.latMs = append(s.latMs, float64(lat)/float64(time.Millisecond))
+			s.latMu.Unlock()
+		}
 	}
 	// motion / sleep_state / net_status are accepted as-is.
 	return true, ""
+}
+
+// ObserveFallLatency records one ingest-to-broadcast delay.
+func (s *Store) ObserveFallLatency(d time.Duration) {
+	s.latMu.Lock()
+	s.latMs = append(s.latMs, float64(d)/float64(time.Millisecond))
+	s.latMu.Unlock()
+}
+
+// FallLatencySnapshot returns p50/p95 over observed fall delays in ms.
+func (s *Store) FallLatencySnapshot() (p50, p95 float64, n int) {
+	s.latMu.Lock()
+	defer s.latMu.Unlock()
+	n = len(s.latMs)
+	if n == 0 {
+		return 0, 0, 0
+	}
+	cp := append([]float64(nil), s.latMs...)
+	sort.Float64s(cp)
+	p50 = cp[int(0.50*float64(n-1))]
+	p95 = cp[int(0.95*float64(n-1))]
+	return p50, p95, n
+}
+
+// ObserveEmitLatency records one ingest-to-wire delay (post-Flush).
+func (s *Store) ObserveEmitLatency(d time.Duration) {
+	s.latMu.Lock()
+	s.emitMs = append(s.emitMs, float64(d)/float64(time.Millisecond))
+	s.latMu.Unlock()
+}
+
+// EmitLatencySnapshot returns p50/p95 over ingest-to-wire delays in ms.
+func (s *Store) EmitLatencySnapshot() (p50, p95 float64, n int) {
+	s.latMu.Lock()
+	defer s.latMu.Unlock()
+	n = len(s.emitMs)
+	if n == 0 {
+		return 0, 0, 0
+	}
+	cp := append([]float64(nil), s.emitMs...)
+	sort.Float64s(cp)
+	p50 = cp[int(0.50*float64(n-1))]
+	p95 = cp[int(0.95*float64(n-1))]
+	return p50, p95, n
 }
 
 func insertSorted(pts []presencePoint, p presencePoint) []presencePoint {
@@ -184,6 +242,19 @@ func (s *Store) AlarmsSince(since time.Time) []domain.Alarm {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	i := sort.Search(len(s.alarms), func(i int) bool { return s.alarms[i].Ts.After(since) })
+	out := make([]domain.Alarm, len(s.alarms)-i)
+	copy(out, s.alarms[i:])
+	return out
+}
+
+// AlarmsSinceInclusive returns distinct falls with ts >= since, oldest
+// first. The SSE feed resumes with it so a reconnect redelivers the
+// boundary alarm (clients dedup by event_id) instead of losing
+// same-timestamp siblings that an exclusive bound would skip.
+func (s *Store) AlarmsSinceInclusive(since time.Time) []domain.Alarm {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	i := sort.Search(len(s.alarms), func(i int) bool { return !s.alarms[i].Ts.Before(since) })
 	out := make([]domain.Alarm, len(s.alarms)-i)
 	copy(out, s.alarms[i:])
 	return out
