@@ -97,17 +97,15 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request) {
-	p50, p95, n := s.st.FallLatencySnapshot()
 	ep50, ep95, en := s.st.EmitLatencySnapshot()
 	var walTotal int64
 	if s.wal != nil {
 		walTotal = s.wal.Count()
 	}
 	writeJSON(w, 200, map[string]any{
-		"fall_latency_ms":      map[string]any{"p50": p50, "p95": p95, "count": n},
 		"fall_emit_latency_ms": map[string]any{"p50": ep50, "p95": ep95, "count": en},
 		"wal_total":            walTotal,
-		"alarms_total":         len(s.st.AlarmsSince(time.Time{})),
+		"fall_warn_total":      len(s.st.AlarmsSince(time.Time{})),
 		"broadcast_dropped":    s.st.DroppedDeliveries()})
 }
 
