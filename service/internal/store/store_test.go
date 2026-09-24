@@ -66,6 +66,32 @@ func TestOccupancyLateReplay(t *testing.T) {
 	}
 }
 
+func TestBroadcastDropCounter(t *testing.T) {
+	s := New()
+	if got := s.DroppedDeliveries(); got != 0 {
+		t.Fatalf("fresh store dropped=%d want 0", got)
+	}
+	ch := s.Subscribe(1)
+	defer s.Unsubscribe(ch)
+	now := time.Now()
+	// Buffer holds 1; the next 2 live alarms overflow it.
+	for i := 0; i < 3; i++ {
+		ts := now.Add(time.Duration(i) * time.Second)
+		s.Apply(domain.Event{DeviceID: "d1", RoomID: "r1", Type: "fall_warn", Ts: ts, TsRaw: ts.Format(time.RFC3339Nano)}, now)
+	}
+	if got := s.DroppedDeliveries(); got != 2 {
+		t.Fatalf("dropped=%d want 2", got)
+	}
+	// Draining does not change the count; all 3 alarms are still stored.
+	<-ch
+	if got := s.DroppedDeliveries(); got != 2 {
+		t.Fatalf("after drain dropped=%d want 2", got)
+	}
+	if got := len(s.AlarmsSince(time.Time{})); got != 3 {
+		t.Fatalf("stored alarms=%d want 3", got)
+	}
+}
+
 func TestHealthUsesEventTime(t *testing.T) {
 	s := New()
 	now := time.Now()

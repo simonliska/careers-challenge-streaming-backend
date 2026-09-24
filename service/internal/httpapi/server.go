@@ -108,7 +108,7 @@ func (s *Server) getMetrics(w http.ResponseWriter, _ *http.Request) {
 		"fall_emit_latency_ms": map[string]any{"p50": ep50, "p95": ep95, "count": en},
 		"wal_total":            walTotal,
 		"alarms_total":         len(s.st.AlarmsSince(time.Time{})),
-	})
+		"broadcast_dropped":    s.st.DroppedDeliveries()})
 }
 
 func (s *Server) getHealth(w http.ResponseWriter, r *http.Request) {

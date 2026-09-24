@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"teton-service/internal/domain"
@@ -41,6 +42,8 @@ type Store struct {
 
 	subsMu sync.Mutex
 	subs   map[chan domain.Alarm]struct{}
+
+	dropped atomic.Uint64
 }
 
 func New() *Store {
@@ -282,8 +285,14 @@ func (s *Store) broadcast(a domain.Alarm) {
 		select {
 		case ch <- a:
 		default:
+			s.dropped.Add(1)
 		}
 	}
+}
+
+// DroppedDeliveries counts live alarms skipped because a subscriber buffer was full.
+func (s *Store) DroppedDeliveries() uint64 {
+	return s.dropped.Load()
 }
 
 func min(a, b float64) float64 {
