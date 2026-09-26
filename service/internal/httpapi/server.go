@@ -52,6 +52,9 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 		Seq      int64    `json:"seq"`
 		InRoom   *bool    `json:"in_room"`
 		Conf     *float64 `json:"confidence"`
+		Magn     *float64 `json:"magnitude"`
+		State    *string  `json:"state"`
+		Rssi     *int     `json:"rssi"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
 		writeJSON(w, 400, map[string]string{"error": "invalid json"})
@@ -76,13 +79,18 @@ func (s *Server) postEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"error": "ts more than 1h in past"})
 		return
 	}
-	if raw.Type == "presence" && raw.InRoom == nil {
-		writeJSON(w, 400, map[string]string{"error": "presence missing in_room"})
+	if raw.Seq < 0 {
+		writeJSON(w, 400, map[string]string{"error": "seq must be >= 0"})
+		return
+	}
+	if ok, reason := domain.ValidateTypeFields(raw.Type, raw.InRoom, raw.Magn, raw.State, raw.Conf, raw.Rssi); !ok {
+		writeJSON(w, 400, map[string]string{"error": reason})
 		return
 	}
 	ev := domain.Event{
 		DeviceID: raw.DeviceID, RoomID: raw.RoomID, Type: raw.Type,
-		TsRaw: raw.Ts, Seq: raw.Seq, InRoom: raw.InRoom, Conf: raw.Conf, Ts: ts,
+		TsRaw: raw.Ts, Seq: raw.Seq, InRoom: raw.InRoom, Conf: raw.Conf,
+		Magn: raw.Magn, State: raw.State, Rssi: raw.Rssi, Ts: ts,
 		IngestTs: now,
 	}
 	// Append-before-ack: WAL first, then in-memory. Falls fsync inline.

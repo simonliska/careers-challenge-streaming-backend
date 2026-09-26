@@ -1,7 +1,9 @@
 package domain
 
 import (
-	"fmt"
+	"math"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,6 +17,9 @@ type Event struct {
 	Seq      int64    `json:"seq"`
 	InRoom   *bool    `json:"in_room,omitempty"`
 	Conf     *float64 `json:"confidence,omitempty"`
+	Magn     *float64 `json:"magnitude,omitempty"`
+	State    *string  `json:"state,omitempty"`
+	Rssi     *int     `json:"rssi,omitempty"`
 
 	Ts time.Time `json:"-"` // parsed TsRaw, authoritative time
 
@@ -28,6 +33,60 @@ func ValidType(t string) bool {
 		return true
 	}
 	return false
+}
+
+// ValidState reports whether s is a known sleep_state value.
+func ValidState(s string) bool {
+	switch s {
+	case "asleep", "awake", "unknown":
+		return true
+	}
+	return false
+}
+
+func validUnit(v float64) bool {
+	return !math.IsNaN(v) && !math.IsInf(v, 0) && v >= 0 && v <= 1
+}
+
+// ValidateTypeFields checks per-type required fields per docs/event_schema.md.
+// Returns ok=false with a short reason when the event must be rejected.
+func ValidateTypeFields(typ string, inRoom *bool, magn *float64, state *string, conf *float64, rssi *int) (bool, string) {
+	switch typ {
+	case "heartbeat":
+		return true, ""
+	case "presence":
+		if inRoom == nil {
+			return false, "presence missing in_room"
+		}
+		return true, ""
+	case "motion":
+		if magn == nil {
+			return false, "motion missing magnitude"
+		}
+		if !validUnit(*magn) {
+			return false, "motion magnitude must be 0..1"
+		}
+		return true, ""
+	case "sleep_state":
+		if state == nil || !ValidState(*state) {
+			return false, "sleep_state state must be asleep|awake|unknown"
+		}
+		return true, ""
+	case "fall_warn":
+		if conf == nil {
+			return false, "fall_warn missing confidence"
+		}
+		if !validUnit(*conf) {
+			return false, "fall_warn confidence must be 0..1"
+		}
+		return true, ""
+	case "net_status":
+		if rssi == nil {
+			return false, "net_status missing rssi"
+		}
+		return true, ""
+	}
+	return false, "unknown type"
 }
 
 // IsPriority reports whether t goes to the prio channel (fall_warn only).
@@ -58,8 +117,11 @@ func ParseTime(s string) (time.Time, bool) {
 			return t, true
 		}
 	}
-	var f float64
-	if _, err := fmt.Sscanf(s, "%f", &f); err == nil {
+	trimmed := strings.TrimSpace(s)
+	if f, err := strconv.ParseFloat(trimmed, 64); err == nil {
+		if math.IsNaN(f) || math.IsInf(f, 0) {
+			return time.Time{}, false
+		}
 		sec := int64(f)
 		nsec := int64((f - float64(sec)) * 1e9)
 		return time.Unix(sec, nsec).UTC(), true
